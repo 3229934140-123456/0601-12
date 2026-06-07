@@ -1,15 +1,21 @@
 import { Request, Response } from 'express';
 import { store } from '../store';
 import { success, fail, getCurrentUserId } from '../utils/response';
-import { Canvas, Layer, Project } from '../types';
+import { canView, canEdit } from '../utils/permission';
+import { Canvas, Layer } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 export const getCurrentCanvas = (req: Request, res: Response) => {
   const { projectId } = req.params;
+  const userId = getCurrentUserId(req);
 
   const project = store.projects.get(projectId);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看画布', 403);
   }
 
   const canvases = store.canvases.get(projectId) || [];
@@ -23,20 +29,26 @@ export const getCurrentCanvas = (req: Request, res: Response) => {
       layers: [],
       background: '#ffffff',
       createdAt: new Date().toISOString(),
-      createdBy: getCurrentUserId(req)
+      createdBy: userId
     };
     return success(res, emptyCanvas);
   }
 
-  success(res, latestCanvas);
+  const sortedLayers = latestCanvas ? [...latestCanvas.layers].sort((a, b) => a.zIndex - b.zIndex) : [];
+  success(res, { ...latestCanvas, layers: sortedLayers });
 };
 
 export const getCanvasVersion = (req: Request, res: Response) => {
   const { projectId, version } = req.params;
+  const userId = getCurrentUserId(req);
 
   const project = store.projects.get(projectId);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看画布', 403);
   }
 
   const canvases = store.canvases.get(projectId) || [];
@@ -46,7 +58,8 @@ export const getCanvasVersion = (req: Request, res: Response) => {
     return fail(res, '版本不存在', 404);
   }
 
-  success(res, canvas);
+  const sortedLayers = [...canvas.layers].sort((a, b) => a.zIndex - b.zIndex);
+  success(res, { ...canvas, layers: sortedLayers });
 };
 
 export const saveCanvas = (req: Request, res: Response) => {
@@ -212,6 +225,10 @@ export const reorderLayers = (req: Request, res: Response) => {
     return fail(res, '没有编辑权限', 403);
   }
 
+  if (!layerIds || !Array.isArray(layerIds) || layerIds.length === 0) {
+    return fail(res, '请提供图层 ID 顺序数组');
+  }
+
   const canvases = store.canvases.get(projectId) || [];
   const latestCanvas = canvases[canvases.length - 1];
 
@@ -219,7 +236,11 @@ export const reorderLayers = (req: Request, res: Response) => {
     return fail(res, '画布不存在');
   }
 
-  const layerMap = new Map(latestCanvas.layers.map(l => [l.id, l]));
+  const layerMap = new Map<string, Layer>();
+  latestCanvas.layers.forEach(layer => {
+    layerMap.set(layer.id, layer);
+  });
+
   const reorderedLayers: Layer[] = [];
 
   layerIds.forEach((id: string, index: number) => {
@@ -227,20 +248,20 @@ export const reorderLayers = (req: Request, res: Response) => {
     if (layer) {
       layer.zIndex = index;
       reorderedLayers.push(layer);
+      layerMap.delete(id);
     }
   });
 
-  latestCanvas.layers.forEach(layer => {
-    if (!layerIds.includes(layer.id)) {
-      layer.zIndex = reorderedLayers.length;
-      reorderedLayers.push(layer);
-    }
+  layerMap.forEach(layer => {
+    layer.zIndex = reorderedLayers.length;
+    reorderedLayers.push(layer);
   });
 
   latestCanvas.layers = reorderedLayers;
   project.updatedAt = new Date().toISOString();
 
-  success(res, latestCanvas.layers, '图层层级已更新');
+  const sortedLayers = [...reorderedLayers].sort((a, b) => a.zIndex - b.zIndex);
+  success(res, sortedLayers, '图层层级已更新');
 };
 
 export const duplicateLayer = (req: Request, res: Response) => {
@@ -371,11 +392,6 @@ function findLayerById(layers: Layer[], id: string): Layer | null {
 
 function findLayerIndexById(layers: Layer[], id: string): number {
   return layers.findIndex(l => l.id === id);
-}
-
-function canEdit(project: Project, userId: string): boolean {
-  const member = project.members.find(m => m.userId === userId);
-  return !!member && (member.role === 'owner' || member.role === 'editor');
 }
 
 function recordActivity(userId: string, projectId: string, type: any, description: string) {

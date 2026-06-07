@@ -1,10 +1,12 @@
 import { Request, Response } from 'express';
 import { store } from '../store';
 import { success, fail, paginate, getCurrentUserId } from '../utils/response';
+import { canView, canEdit, isValidCommentContent } from '../utils/permission';
 import { Comment, Project, Notification } from '../types';
 
 export const getComments = (req: Request, res: Response) => {
   const { projectId } = req.params;
+  const userId = getCurrentUserId(req);
   const page = parseInt(req.query.page as string) || 1;
   const pageSize = parseInt(req.query.pageSize as string) || 20;
   const resolved = req.query.resolved as string;
@@ -13,6 +15,10 @@ export const getComments = (req: Request, res: Response) => {
   const project = store.projects.get(projectId);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看评论', 403);
   }
 
   let comments = store.comments.get(projectId) || [];
@@ -82,6 +88,11 @@ export const updateComment = (req: Request, res: Response) => {
   const userId = getCurrentUserId(req);
   const { content } = req.body;
 
+  const project = store.projects.get(projectId);
+  if (!project) {
+    return fail(res, '项目不存在', 404);
+  }
+
   const comments = store.comments.get(projectId) || [];
   const comment = comments.find(c => c.id === commentId);
 
@@ -93,7 +104,12 @@ export const updateComment = (req: Request, res: Response) => {
     return fail(res, '没有权限修改', 403);
   }
 
-  comment.content = content;
+  const validation = isValidCommentContent(content);
+  if (!validation.valid) {
+    return fail(res, validation.message || '评论内容无效', 400);
+  }
+
+  comment.content = content.trim();
   success(res, comment, '更新成功');
 };
 
@@ -220,15 +236,6 @@ export const replyComment = (req: Request, res: Response) => {
 
   success(res, reply, '回复成功');
 };
-
-function canView(project: Project, userId: string): boolean {
-  return project.members.some(m => m.userId === userId);
-}
-
-function canEdit(project: Project, userId: string): boolean {
-  const member = project.members.find(m => m.userId === userId);
-  return !!member && (member.role === 'owner' || member.role === 'editor');
-}
 
 function notifyProjectMembers(
   project: Project,

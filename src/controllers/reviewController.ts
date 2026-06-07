@@ -1,10 +1,12 @@
 import { Request, Response } from 'express';
 import { store } from '../store';
 import { success, fail, paginate, getCurrentUserId } from '../utils/response';
+import { canView, canEdit } from '../utils/permission';
 import { Review, Project, Notification } from '../types';
 
 export const getReviews = (req: Request, res: Response) => {
   const { projectId } = req.params;
+  const userId = getCurrentUserId(req);
   const page = parseInt(req.query.page as string) || 1;
   const pageSize = parseInt(req.query.pageSize as string) || 10;
   const status = req.query.status as string;
@@ -12,6 +14,10 @@ export const getReviews = (req: Request, res: Response) => {
   const project = store.projects.get(projectId);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看审核', 403);
   }
 
   let reviews = store.reviews.get(projectId) || [];
@@ -35,10 +41,15 @@ export const getReviews = (req: Request, res: Response) => {
 
 export const getReview = (req: Request, res: Response) => {
   const { projectId, reviewId } = req.params;
+  const userId = getCurrentUserId(req);
 
   const project = store.projects.get(projectId);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看审核', 403);
   }
 
   const reviews = store.reviews.get(projectId) || [];
@@ -272,11 +283,6 @@ export const getMyReviews = (req: Request, res: Response) => {
 
   success(res, paginate(reviewsWithProjects, page, pageSize));
 };
-
-function canEdit(project: Project, userId: string): boolean {
-  const member = project.members.find(m => m.userId === userId);
-  return !!member && (member.role === 'owner' || member.role === 'editor');
-}
 
 function sendNotification(
   userId: string,

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { store } from '../store';
 import { success, fail, paginate, getCurrentUserId } from '../utils/response';
+import { canView, canEdit, isOwner, isValidPageSize } from '../utils/permission';
 import { Project, PageSize, MemberRole, Activity, ProjectMember } from '../types';
 
 export const getProjects = (req: Request, res: Response) => {
@@ -33,10 +34,15 @@ export const getProjects = (req: Request, res: Response) => {
 
 export const getProject = (req: Request, res: Response) => {
   const { id } = req.params;
+  const userId = getCurrentUserId(req);
   const project = store.projects.get(id);
 
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限访问该项目', 403);
   }
 
   success(res, project);
@@ -123,7 +129,17 @@ export const updatePageSize = (req: Request, res: Response) => {
     return fail(res, '没有编辑权限', 403);
   }
 
-  project.pageSize = { width, height, unit, name };
+  const validation = isValidPageSize(width, height, unit);
+  if (!validation.valid) {
+    return fail(res, validation.message || '页面尺寸参数无效', 400);
+  }
+
+  project.pageSize = {
+    width: Number(width),
+    height: Number(height),
+    unit: unit || 'px',
+    name
+  };
   project.updatedAt = new Date().toISOString();
 
   success(res, project.pageSize, '页面尺寸已更新');
@@ -138,8 +154,7 @@ export const deleteProject = (req: Request, res: Response) => {
     return fail(res, '项目不存在', 404);
   }
 
-  const member = project.members.find(m => m.userId === userId);
-  if (!member || member.role !== 'owner') {
+  if (!isOwner(project, userId)) {
     return fail(res, '只有所有者可以删除项目', 403);
   }
 
@@ -153,10 +168,15 @@ export const deleteProject = (req: Request, res: Response) => {
 
 export const getMembers = (req: Request, res: Response) => {
   const { id } = req.params;
+  const userId = getCurrentUserId(req);
 
   const project = store.projects.get(id);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看成员列表', 403);
   }
 
   const membersWithUserInfo = project.members.map(m => ({
@@ -271,10 +291,15 @@ export const removeMember = (req: Request, res: Response) => {
 
 export const getProjectVersions = (req: Request, res: Response) => {
   const { id } = req.params;
+  const userId = getCurrentUserId(req);
 
   const project = store.projects.get(id);
   if (!project) {
     return fail(res, '项目不存在', 404);
+  }
+
+  if (!canView(project, userId)) {
+    return fail(res, '无权限查看历史版本', 403);
   }
 
   const canvases = store.canvases.get(id) || [];
@@ -283,16 +308,12 @@ export const getProjectVersions = (req: Request, res: Response) => {
     snapshotName: c.snapshotName,
     createdAt: c.createdAt,
     createdBy: c.createdBy,
+    creator: store.users.get(c.createdBy),
     layerCount: c.layers.length
   }));
 
   success(res, versions.sort((a, b) => b.version - a.version));
 };
-
-function canEdit(project: Project, userId: string): boolean {
-  const member = project.members.find(m => m.userId === userId);
-  return !!member && (member.role === 'owner' || member.role === 'editor');
-}
 
 function recordActivity(userId: string, projectId: string, type: Activity['type'], description: string) {
   store.activities.unshift({
